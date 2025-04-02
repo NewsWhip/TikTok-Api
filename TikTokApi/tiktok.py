@@ -186,7 +186,7 @@ class TikTokApi:
         page.set_default_navigation_timeout(timeout)
 
         await page.goto(url)
-        await page.goto(url) # hack: tiktok blocks first request not sure why, likely bot detection
+        #await page.goto(url) # hack: tiktok blocks first request not sure why, likely bot detection
         
         # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
         x, y = random.randint(0, 50), random.randint(0, 50)
@@ -474,7 +474,8 @@ class TikTokApi:
                 params["msToken"] = ms_token
 
         encoded_params = f"{url}?{urlencode(params, safe='=', quote_via=quote)}"
-        signed_url = await self.sign_url(encoded_params, session_index=i)
+        #signed_url = await self.sign_url(encoded_params, session_index=i)
+        signed_url = encoded_params #try without signing urls
 
         retry_count = 0
         while retry_count < retries:
