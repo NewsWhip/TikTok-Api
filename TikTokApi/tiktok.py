@@ -383,7 +383,7 @@ class TikTokApi:
         """Generate the X-Bogus header for a url"""
         _, session = self._get_session(**kwargs)
 
-        max_attempts = 5
+        max_attempts = 3
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
