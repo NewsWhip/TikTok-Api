@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import logging
+
 from ..helpers import extract_video_id_from_url, requests_cookie_to_playwright_cookie
 from typing import TYPE_CHECKING, ClassVar, Iterator, Optional
 from datetime import datetime
@@ -98,6 +101,7 @@ class Video:
         if self.url is None:
             raise TypeError("To call video.info() you need to set the video's url.")
 
+        logging.info(f"Requests call -- URL: {self.url}  Headers: {session.headers}  Proxies: {proxy}")
         r = requests.get(self.url, headers=session.headers, proxies=proxy)
         if r.status_code != 200:
             raise InvalidResponseException(
