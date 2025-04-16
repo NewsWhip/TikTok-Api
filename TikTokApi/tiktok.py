@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import dataclasses
+from memory_profiler import profile
 from typing import Any
 import random
 import time
@@ -379,11 +380,12 @@ class TikTokApi:
         result = await session.page.evaluate(js_script)
         return result
 
+    @profile
     async def generate_x_bogus(self, url: str, **kwargs):
         """Generate the X-Bogus header for a url"""
         _, session = self._get_session(**kwargs)
 
-        max_attempts = 3
+        max_attempts = 5
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
