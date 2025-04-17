@@ -425,6 +425,7 @@ class TikTokApi:
 
         return url
 
+    @profile()
     async def make_request(
         self,
         url: str,
