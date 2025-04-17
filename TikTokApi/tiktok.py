@@ -364,6 +364,7 @@ class TikTokApi:
         cookies = await session.context.cookies()
         return {cookie["name"]: cookie["value"] for cookie in cookies}
 
+    @profile()
     async def run_fetch_script(self, url: str, headers: dict, **kwargs):
         """
         Execute a javascript fetch function in a session
@@ -406,6 +407,7 @@ class TikTokApi:
         )
         return result
 
+    @profile()
     async def sign_url(self, url: str, **kwargs):
         """Sign a url"""
         i, session = self._get_session(**kwargs)
