@@ -379,6 +379,8 @@ class TikTokApi:
         js_script = self.generate_js_fetch("GET", url, headers)
         _, session = self._get_session(**kwargs)
         result = await session.page.evaluate(js_script)
+        logging.info(f"Running context.close()")
+        await session.context.close()
         return result
 
     @profile
