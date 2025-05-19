@@ -7,7 +7,7 @@ import random
 import time
 import json
 
-from playwright.async_api import async_playwright, TimeoutError
+from playwright.async_api import async_playwright, TimeoutError, BrowserContext
 from urllib.parse import urlencode, quote, urlparse
 from .stealth import stealth_async
 from .helpers import random_choice
@@ -229,7 +229,7 @@ class TikTokApi:
         override_browser_args: list[dict] = None,
         cookies: list[dict] = None,
         suppress_resource_load_types: list[str] = None,
-        browser: str = "webkit",
+        browser: str = "chromium",
         executable_path: str = None,
         timeout: int = 30000,
     ):
