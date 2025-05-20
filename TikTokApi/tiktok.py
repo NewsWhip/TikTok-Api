@@ -2,7 +2,7 @@ import asyncio
 import logging
 import dataclasses
 from memory_profiler import profile
-from typing import Any, Optional
+from typing import Any, Optional, Union
 import random
 import time
 import json
@@ -388,7 +388,7 @@ class TikTokApi:
             state = sess.context.storage_state()
             await sess.page.close()
             await sess.context.close()
-            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[state, None], **context_options)
+            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[Union[state, "", None]], **context_options)
 
             sess.page = await sess.context.new_page()
             await stealth_async(sess.page)
