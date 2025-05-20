@@ -1,13 +1,12 @@
 import asyncio
 import logging
 import dataclasses
-from memory_profiler import profile
-from typing import Any, Optional, Union
+from typing import Any
 import random
 import time
 import json
 
-from playwright.async_api import async_playwright, TimeoutError, BrowserContext
+from playwright.async_api import async_playwright, TimeoutError, BrowserContext, StorageState
 from urllib.parse import urlencode, quote, urlparse
 from .stealth import stealth_async
 from .helpers import random_choice
@@ -364,7 +363,6 @@ class TikTokApi:
         cookies = await session.context.cookies()
         return {cookie["name"]: cookie["value"] for cookie in cookies}
 
-    @profile()
     async def run_fetch_script(self, url: str, headers: dict, **kwargs):
         """
         Execute a javascript fetch function in a session
@@ -385,7 +383,7 @@ class TikTokApi:
     async def refresh_contexts(self, proxy: dict = None, context_options: dict = {}):
         for sess in self.sessions:
             print(f"Refreshing context for session...")
-            state: BrowserContext.storage_state = await sess.context.storage_state()
+            state: StorageState = await sess.context.storage_state()
             await sess.page.close()
             await sess.context.close()
             sess.context = await self.browser.new_context(storage_state=state)
@@ -405,7 +403,6 @@ class TikTokApi:
             await sess.page.mouse.move(a, b)
             print(f"Finished refreshing context for session....")
 
-    @profile
     async def generate_x_bogus(self, url: str, **kwargs):
         """Generate the X-Bogus header for a url"""
         _, session = self._get_session(**kwargs)
@@ -431,7 +428,6 @@ class TikTokApi:
         )
         return result
 
-    @profile()
     async def sign_url(self, url: str, **kwargs):
         """Sign a url"""
         i, session = self._get_session(**kwargs)
@@ -451,7 +447,6 @@ class TikTokApi:
 
         return url
 
-    @profile()
     async def make_request(
         self,
         url: str,
