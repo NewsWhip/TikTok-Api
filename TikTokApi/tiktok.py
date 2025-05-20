@@ -385,10 +385,10 @@ class TikTokApi:
     async def refresh_contexts(self, proxy: dict = None, context_options: dict = {}):
         for sess in self.sessions:
             print(f"Refreshing context for session...")
-            state = sess.context.storage_state()
+            state = await sess.context.storage_state()
             await sess.page.close()
             await sess.context.close()
-            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[Union[state, "", None]], **context_options)
+            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[Union[state, None]], **context_options)
 
             sess.page = await sess.context.new_page()
             await stealth_async(sess.page)
