@@ -388,7 +388,7 @@ class TikTokApi:
             state = await sess.context.storage_state()
             await sess.page.close()
             await sess.context.close()
-            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[Union[state, None]], **context_options)
+            sess.context = await self.browser.new_context(storage_state=state)
 
             sess.page = await sess.context.new_page()
             await stealth_async(sess.page)
