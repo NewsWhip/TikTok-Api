@@ -2,7 +2,7 @@ import asyncio
 import logging
 import dataclasses
 from memory_profiler import profile
-from typing import Any
+from typing import Any, Optional
 import random
 import time
 import json
@@ -380,8 +380,30 @@ class TikTokApi:
         _, session = self._get_session(**kwargs)
         result = await session.page.evaluate(js_script)
         logging.info(f"Running context.close()")
-        await session.context.close()
         return result
+
+    async def refresh_contexts(self, proxy: dict = None, context_options: dict = {}):
+        for sess in self.sessions:
+            print(f"Refreshing context for session...")
+            state = sess.context.storage_state()
+            sess.page.close()
+            sess.context.close()
+            sess.context = await self.browser.new_context(proxy=proxy, storage_state=Optional[state, None], **context_options)
+
+            sess.page = await sess.context.new_page()
+            await stealth_async(sess.page)
+
+            await sess.page.goto("https://www.tiktok.com")
+            await sess.page.goto("https://www.tiktok.com")  # hack: tiktok blocks first request not sure why, likely bot detection
+
+            # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
+            x, y = random.randint(0, 50), random.randint(0, 50)
+            a, b = random.randint(1, 50), random.randint(100, 200)
+
+            await sess.page.mouse.move(x, y)
+            await sess.page.wait_for_load_state("networkidle")
+            await sess.page.mouse.move(a, b)
+            print(f"Finished refreshing context for session....")
 
     @profile
     async def generate_x_bogus(self, url: str, **kwargs):
