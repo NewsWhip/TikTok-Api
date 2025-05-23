@@ -390,16 +390,16 @@ class TikTokApi:
             sess.page = await sess.context.new_page()
             await stealth_async(sess.page)
 
-            await sess.page.goto("https://www.tiktok.com")
-            await sess.page.goto("https://www.tiktok.com")  # hack: tiktok blocks first request not sure why, likely bot detection
-
-            # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
-            x, y = random.randint(0, 50), random.randint(0, 50)
-            a, b = random.randint(1, 50), random.randint(100, 200)
-
-            await sess.page.mouse.move(x, y)
-            await sess.page.wait_for_load_state("networkidle")
-            await sess.page.mouse.move(a, b)
+            # await sess.page.goto("https://www.tiktok.com")
+            # await sess.page.goto("https://www.tiktok.com")  # hack: tiktok blocks first request not sure why, likely bot detection
+            #
+            # # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
+            # x, y = random.randint(0, 50), random.randint(0, 50)
+            # a, b = random.randint(1, 50), random.randint(100, 200)
+            #
+            # await sess.page.mouse.move(x, y)
+            # await sess.page.wait_for_load_state("networkidle")
+            # await sess.page.mouse.move(a, b)
             print(f"Finished refreshing context for session....")
 
     async def generate_x_bogus(self, url: str, **kwargs):
