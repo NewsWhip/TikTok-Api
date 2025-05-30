@@ -383,23 +383,24 @@ class TikTokApi:
         for sess in self.sessions:
             print(f"Refreshing context for session...")
             state: StorageState = await sess.context.storage_state()
+            cookies = await self.get_session_cookies(sess)
             await sess.page.close()
-            await sess.context.close()
-            sess.context = await self.browser.new_context(proxy=proxy, storage_state=state) ##todo: take in proxy here
+            # await sess.context.close()
+            # sess.context = await self.browser.new_context(proxy=proxy, storage_state=state) ##todo: take in proxy here
 
             sess.page = await sess.context.new_page()
             await stealth_async(sess.page)
 
-            await sess.page.goto("https://www.tiktok.com")
+            # await sess.page.goto("https://www.tiktok.com")
             # await sess.page.goto("https://www.tiktok.com")  # hack: tiktok blocks first request not sure why, likely bot detection
             #
             # # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
-            x, y = random.randint(0, 50), random.randint(0, 50)
-            a, b = random.randint(1, 50), random.randint(100, 200)
-            #
-            await sess.page.mouse.move(x, y)
-            await sess.page.wait_for_load_state("networkidle")
-            await sess.page.mouse.move(a, b)
+            # x, y = random.randint(0, 50), random.randint(0, 50)
+            # a, b = random.randint(1, 50), random.randint(100, 200)
+            # #
+            # await sess.page.mouse.move(x, y)
+            # await sess.page.wait_for_load_state("networkidle")
+            # await sess.page.mouse.move(a, b)
             print(f"Finished refreshing context for session....")
 
     async def generate_x_bogus(self, url: str, **kwargs):
