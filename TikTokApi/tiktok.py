@@ -6,8 +6,6 @@ import random
 import time
 import json
 
-import ijson
-import orjson
 from playwright.async_api import async_playwright, TimeoutError, BrowserContext, StorageState
 from urllib.parse import urlencode, quote, urlparse
 from .stealth import stealth_async
