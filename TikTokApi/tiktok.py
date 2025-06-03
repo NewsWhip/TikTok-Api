@@ -6,6 +6,8 @@ import random
 import time
 import json
 
+import ijson
+import orjson
 from playwright.async_api import async_playwright, TimeoutError, BrowserContext, StorageState
 from urllib.parse import urlencode, quote, urlparse
 from .stealth import stealth_async
@@ -512,11 +514,14 @@ class TikTokApi:
             if result == "":
                 raise EmptyResponseException(result, "TikTok returned an empty response. They are detecting you're a bot, try some of these: headless=False, browser='webkit', consider using a proxy")
 
+
+            data = ""
             try:
-                data = result
-                # data = json.loads(result)
-                # if data.get("status_code") != 0:
-                #     self.logger.error(f"Got an unexpected status code: {data}")
+                data = json.loads(result)
+                # data = orjson.loads(result)
+                # data = ijson.parse(result)
+                if data.get("status_code") != 0:
+                    self.logger.error(f"Got an unexpected status code: {data}")
                 return data
             except json.decoder.JSONDecodeError:
                 if retry_count == retries:
@@ -530,6 +535,8 @@ class TikTokApi:
                     await asyncio.sleep(2**retry_count)
                 else:
                     await asyncio.sleep(1)
+            finally:
+                del(data)
 
     async def close_sessions(self):
         """Close all the sessions. Should be called when you're done with the TikTokApi object"""
