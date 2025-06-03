@@ -517,9 +517,9 @@ class TikTokApi:
 
             data = ""
             try:
-                data = json.loads(result)
+                # data = json.loads(result)
                 # data = orjson.loads(result)
-                # data = ijson.parse(result)
+                data = ijson.parse(result)
                 if data.get("status_code") != 0:
                     self.logger.error(f"Got an unexpected status code: {data}")
                 return data
