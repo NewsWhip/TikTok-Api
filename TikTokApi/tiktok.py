@@ -513,9 +513,10 @@ class TikTokApi:
                 raise EmptyResponseException(result, "TikTok returned an empty response. They are detecting you're a bot, try some of these: headless=False, browser='webkit', consider using a proxy")
 
             try:
-                data = json.loads(result)
-                if data.get("status_code") != 0:
-                    self.logger.error(f"Got an unexpected status code: {data}")
+                data = result
+                # data = json.loads(result)
+                # if data.get("status_code") != 0:
+                #     self.logger.error(f"Got an unexpected status code: {data}")
                 return data
             except json.decoder.JSONDecodeError:
                 if retry_count == retries:
