@@ -7,7 +7,6 @@ import time
 import json
 from orjson import orjson
 import ujson
-import json_lineage
 
 from playwright.async_api import async_playwright, TimeoutError, BrowserContext, StorageState
 from urllib.parse import urlencode, quote, urlparse
