@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import logging
 import dataclasses
@@ -522,7 +523,7 @@ class TikTokApi:
                 # data = ujson.loads(result)
                 # json_lineage.load(result)
 
-                data = result
+                data = ast.literal_eval(result)
 
                 print(f"Result type of run_fetch_script is: {type(data)}")
 
