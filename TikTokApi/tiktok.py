@@ -496,12 +496,15 @@ class TikTokApi:
                         f"[{request.resource_type}]"
                     )
 
-                def log_response(response):
-                    size = response.headers.get('content-length', 'unknown')
+                async def log_response(response):
+                    size = await response.request.sizes()
+                    req_size = size['requestHeadersSize'] + size['requestBodySize']
+                    resp_size = size['responseHeadersSize'] + size['responseBodySize']
                     self.logger.debug(
                         f"← Response: {response.status} {response.url[:100]} "
-                        f"[{response.request.resource_type}] Size: {size} bytes"
-                        f"[Headers: {response.headers}"
+                        f"[{response.request.resource_type}] Sizes: request={req_size} bytes "
+                        f"response={resp_size} bytes"
+                        # f"[Headers: {response.headers}"
                     )
 
                 page.on("request", log_request)
