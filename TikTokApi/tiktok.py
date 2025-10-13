@@ -471,17 +471,6 @@ class TikTokApi:
                 ]
                 await context.add_cookies(formatted_cookies)
 
-            def blockable_request(request):
-                if ((request.resource_type in suppress_resource_load_types) or re.match(
-                        r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
-                        request.url)):
-                  self.logger.info(
-                      f"aborting request to {request.url}"
-                  )
-                  return True
-                else:
-                  return False
-
             if page_factory:
                 page = await page_factory(context)
             else:
@@ -510,14 +499,10 @@ class TikTokApi:
                 page.on("request", log_request)
                 page.on("response", log_response)
 
-            if suppress_resource_load_types is not None:
-                await page.route(
-                    "**/*",
-                    lambda route, request: (
-                        route.abort() if (blockable_request(request))
-                        else route.continue_()
-                    ),
-                )
+                _ = await page.goto(url)
+
+            if "tiktok" not in page.url:
+                _ = await page.goto("https://www.tiktok.com")
 
             # Get the request headers to the url
             request_headers = None
@@ -528,11 +513,29 @@ class TikTokApi:
 
             page.once("request", handle_request)
 
+            def blockable_request(request):
+                if ((request.resource_type in suppress_resource_load_types) or re.match(
+                        r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
+                        request.url)):
+                  self.logger.info(
+                      f"aborting request to {request.url}"
+                  )
+                  return True
+                else:
+                  return False
+
+
+            if suppress_resource_load_types is not None:
+                await page.route(
+                    "**/*",
+                    lambda route, request: (
+                        route.abort() if (blockable_request(request))
+                        else route.continue_()
+                    ),
+                )
 
             # Set the navigation timeout
             page.set_default_navigation_timeout(timeout)
-
-            _ = await page.goto(url)
 
             # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
             x, y = random.randint(0, 50), random.randint(0, 50)
