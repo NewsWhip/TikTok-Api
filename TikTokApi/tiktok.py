@@ -275,7 +275,7 @@ class TikTokApi:
             bool: True if refresh succeeded, False otherwise
         """
         try:
-            self.logger.info("Attempting to refresh msToken by reloading page...")
+            self.logger.debug("Attempting to refresh msToken by reloading page...")
 
             # Track bandwidth during reload
             total_bytes = 0
@@ -307,7 +307,7 @@ class TikTokApi:
 
             # Log total bandwidth used
             total_mb = total_bytes / (1024 * 1024)
-            self.logger.info(
+            self.logger.debug(
                 f"Page reload completed: {request_count} requests, {total_mb:.2f} MB ({total_bytes:,} bytes)"
             )
 
@@ -320,7 +320,7 @@ class TikTokApi:
                 new_token_preview = new_ms_token[:20] + "..." if new_ms_token else "None"
 
                 session.ms_token = new_ms_token
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully refreshed msToken (old: {old_token_preview}, new: {new_token_preview})"
                 )
                 return True
@@ -356,7 +356,6 @@ class TikTokApi:
                 if i < len(self.sessions):
                     session = self.sessions[i]
                     if await self._is_session_valid(session):
-                        self.logger.info(f"Got a session & verified it's valid. Session " + i)
                         return i, session
                     else:
                         self.logger.warning(f"Requested session {i} is invalid")
@@ -397,7 +396,7 @@ class TikTokApi:
         and potentially creating new ones if we have the necessary configuration.
         """
         async with self._session_creation_lock:
-            self.logger.info("Starting session recovery...")
+            self.logger.debug("Starting session recovery...")
 
             # Remove invalid sessions
             initial_count = len(self.sessions)
@@ -407,7 +406,7 @@ class TikTokApi:
             removed_count = initial_count - len(self.sessions)
 
             if removed_count > 0:
-                self.logger.info(f"Removed {removed_count} dead session(s)")
+                self.logger.debug(f"Removed {removed_count} dead session(s)")
 
             self.logger.info(f"Creating {removed_count} sessions to replace dead sessions...")
             await asyncio.gather(
@@ -479,7 +478,6 @@ class TikTokApi:
 
                 # Add network logging to track what's being loaded
                 async def log_request(request):
-                    contextCookies = await context.cookies()
                     self.logger.debug(
                         f"→ Request: {request.method} {request.url[:100]} "
                         f"[{request.resource_type}]"
@@ -493,7 +491,6 @@ class TikTokApi:
                         f"← Response: {response.status} {response.url[:100]} "
                         f"[{response.request.resource_type}] Sizes: request={req_size} bytes "
                         f"response={resp_size} bytes"
-                        # f"[Headers: {response.headers}"
                     )
 
                 page.on("request", log_request)
@@ -517,7 +514,7 @@ class TikTokApi:
                 if ((request.resource_type in suppress_resource_load_types) or re.match(
                         r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
                         request.url)):
-                  self.logger.info(
+                  self.logger.debug(
                       f"aborting request to {request.url}"
                   )
                   return True
@@ -939,7 +936,7 @@ class TikTokApi:
                 ]
 
                 page = random.choice(try_urls)
-                self.logger.info(f"Timed out waiting for acrawler function. Reloading page: {page}")
+                self.logger.debug(f"Timed out waiting for acrawler function. Reloading page: {page}")
                 await session.page.goto(page)
             except PlaywrightError as e:
                 # Session died
@@ -1119,10 +1116,6 @@ class TikTokApi:
                     )
 
                 try:
-                    # data = json.loads(result)
-                    # if data.get("status_code") != 0:
-                    #     self.logger.error(f"Got an unexpected status code: {data}")
-
                     # Track successful request
                     session.total_requests += 1
                     session.successful_requests += 1
@@ -1136,7 +1129,7 @@ class TikTokApi:
                         self.logger.error(f"Failed to decode json response: {result}")
                         raise InvalidJSONException()
 
-                    self.logger.info(
+                    self.logger.debug(
                         f"Failed a request, retrying ({retry_count}/{retries})"
                     )
                     if exponential_backoff:
@@ -1149,7 +1142,7 @@ class TikTokApi:
                 await self._mark_session_invalid(session)
 
                 if retry_count < retries:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Retrying with a new session ({retry_count}/{retries})"
                     )
                     # Get a new valid session for the retry
