@@ -1111,7 +1111,9 @@ class TikTokApi:
                                     session.total_requests
                                 )
 
-                            await self._mark_session_invalid(session)
+                            if self._session_recovery_enabled:
+                                self.logger.info("Session recovery enabled, marking session invalid after empty response from TikTok")
+                                await self._mark_session_invalid(session)
 
                     raise EmptyResponseException(
                         result,
