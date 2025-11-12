@@ -42,10 +42,6 @@ from .exceptions import (
     EmptyResponseException,
 )
 
-proxy_server_url = os.getenv("PROXY_SERVER_URL")
-proxy_username = os.getenv("PROXY_USERNAME")
-proxy_password = os.getenv("PROXY_PASSWORD")
-
 @dataclasses.dataclass
 class TikTokPlaywrightSession:
     """A TikTok session using Playwright"""
@@ -61,7 +57,6 @@ class TikTokPlaywrightSession:
     empty_response_count: int = 0
     successful_requests: int = 0
     total_requests: int = 0
-    mstoken_refresh_attempts: int = 0
 
 
 class TikTokApi:
@@ -85,7 +80,7 @@ class TikTokApi:
 
 
 
-    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, enable_mstoken_refresh: bool = True, max_mstoken_refresh_attempts: int = 2, metrics_callback: Optional[Callable] = None):
+    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, metrics_callback: Optional[Callable] = None):
         """
         Create a TikTokApi object.
 
@@ -93,8 +88,6 @@ class TikTokApi:
             logging_level (int): The logging level you want to use.
             logger_name (str): The name of the logger you want to use.
             empty_response_threshold (int): Number of consecutive empty responses before attempting msToken refresh (default: 3)
-            enable_mstoken_refresh (bool): Enable msToken refresh mechanism. If False, sessions are marked invalid immediately at threshold (default: True)
-            max_mstoken_refresh_attempts (int): Maximum number of msToken refresh attempts before marking session invalid (default: 2)
             metrics_callback (Callable): Optional callback object with methods for recording metrics
         """
         self.sessions = []
@@ -105,8 +98,6 @@ class TikTokApi:
         self._proxy_provider: Optional[ProxyProvider] = None
         self._proxy_algorithm: Optional[Algorithm] = None
         self._empty_response_threshold = empty_response_threshold
-        self._enable_mstoken_refresh = enable_mstoken_refresh
-        self._max_mstoken_refresh_attempts = max_mstoken_refresh_attempts
         self._metrics_callback = metrics_callback
 
         if logger_name is None:
@@ -314,13 +305,6 @@ class TikTokApi:
             "No valid sessions available. All sessions appear to be dead. "
             "Please call create_sessions() again or restart the API."
         )
-
-    def get_proxy_options(self):
-        return {
-            "server": proxy_server_url,
-            "username": proxy_username,
-            "password": proxy_password
-        }
 
     async def _recover_sessions(self):
         """
@@ -999,7 +983,6 @@ class TikTokApi:
 
                     # Reset counters on successful response
                     session.empty_response_count = 0
-                    session.mstoken_refresh_attempts = 0
                     return result
                 except json.decoder.JSONDecodeError:
                     if retry_count == retries:
