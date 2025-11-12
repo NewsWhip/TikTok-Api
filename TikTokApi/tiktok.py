@@ -976,17 +976,6 @@ class TikTokApi:
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
-                        # Refresh disabled or max attempts exceeded, mark session invalid
-                        if not self._enable_mstoken_refresh:
-                            reason = "msToken refresh disabled"
-                        else:
-                            reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
-
-                        self.logger.error(
-                            f"Session {reason}, marking invalid. "
-                            f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
-                        )
-
                         # Record session invalidation metric with lifetime stats
                         if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
                             self._metrics_callback.record_session_invalidated(
