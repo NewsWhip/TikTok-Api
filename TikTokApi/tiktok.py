@@ -1472,6 +1472,7 @@ class TikTokApi:
 
                                 await self._mark_session_invalid(session)
 
+                    # Raise exception - will be caught below if we can retry
                     raise EmptyResponseException(
                         result,
                         "TikTok returned an empty response. They are detecting you're a bot, try some of these: headless=False, browser='webkit', consider using a proxy",
@@ -1510,21 +1511,9 @@ class TikTokApi:
                 if self._circuit_breaker:
                     await self._circuit_breaker.record_request(success=False)
 
-                # Check circuit breaker before invalidating
-                should_prevent_invalidation = (
-                    self._circuit_breaker and
-                    self._circuit_breaker.should_prevent_invalidation()
-                )
-
-                if should_prevent_invalidation:
-                    cb_state = self._circuit_breaker.get_state()
-                    self.logger.warning(
-                        f"PlaywrightError but circuit breaker is {cb_state['state']} - "
-                        f"keeping session in pool (may be unhealthy)"
-                    )
-                else:
-                    # Normal behavior: invalidate the session
-                    await self._mark_session_invalid(session)
+                # Always invalidate truly dead sessions (PlaywrightError means browser/page is dead)
+                # Even during circuit breaker OPEN state, we need to remove dead sessions
+                await self._mark_session_invalid(session)
 
                 if retry_count < retries:
                     self.logger.debug(
@@ -1539,6 +1528,41 @@ class TikTokApi:
                         )
                         raise
                 else:
+                    raise
+            except EmptyResponseException as e:
+                # Handle empty responses - potentially retry with different session
+                # especially when circuit breaker is preventing normal session invalidation
+                if retry_count < retries:
+                    # During circuit breaker OPEN/HALF_OPEN, we should try different sessions
+                    # since the current one may be bad
+                    if self._circuit_breaker and self._circuit_breaker.should_prevent_invalidation():
+                        cb_state = self._circuit_breaker.get_state()
+                        self.logger.debug(
+                            f"EmptyResponse during circuit {cb_state['state']} - "
+                            f"attempting to get a different session for retry ({retry_count}/{retries})"
+                        )
+                        # Try to get a different session
+                        try:
+                            i, session = await self._get_valid_session_index(**kwargs)
+                        except Exception as session_error:
+                            self.logger.error(
+                                f"Failed to get valid session for retry: {session_error}"
+                            )
+                            # Re-raise original EmptyResponseException
+                            raise e
+                    else:
+                        # Circuit closed - session was already invalidated if needed, just retry
+                        self.logger.debug(
+                            f"EmptyResponse with circuit closed - retrying ({retry_count}/{retries})"
+                        )
+
+                    # Apply backoff before retry
+                    if exponential_backoff:
+                        await asyncio.sleep(2**retry_count)
+                    else:
+                        await asyncio.sleep(1)
+                else:
+                    # No more retries, re-raise
                     raise
 
     async def stop_playwright(self):
