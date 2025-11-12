@@ -47,6 +47,36 @@ proxy_username = os.getenv("PROXY_USERNAME")
 proxy_password = os.getenv("PROXY_PASSWORD")
 
 
+def _get_env_bool(key: str, default: bool) -> bool:
+    """Get boolean value from environment variable."""
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def _get_env_float(key: str, default: float) -> float:
+    """Get float value from environment variable."""
+    value = os.getenv(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_env_int(key: str, default: int) -> int:
+    """Get integer value from environment variable."""
+    value = os.getenv(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
 class CircuitBreakerState:
     """Circuit breaker states"""
     CLOSED = "closed"  # Normal operation
@@ -323,14 +353,14 @@ class TikTokApi:
         enable_mstoken_refresh: bool = True,
         max_mstoken_refresh_attempts: int = 2,
         metrics_callback: Optional[Callable] = None,
-        circuit_breaker_enabled: bool = True,
-        circuit_failure_threshold: float = 0.5,
-        circuit_min_requests: int = 10,
-        circuit_window_seconds: int = 60,
-        circuit_cooldown_seconds: int = 30,
-        circuit_max_cooldown_seconds: int = 300,
-        circuit_half_open_success_threshold: float = 0.7,
-        circuit_half_open_max_requests: int = 10,
+        circuit_breaker_enabled: bool = None,
+        circuit_failure_threshold: float = None,
+        circuit_min_requests: int = None,
+        circuit_window_seconds: int = None,
+        circuit_cooldown_seconds: int = None,
+        circuit_max_cooldown_seconds: int = None,
+        circuit_half_open_success_threshold: float = None,
+        circuit_half_open_max_requests: int = None,
     ):
         """
         Create a TikTokApi object.
@@ -342,14 +372,18 @@ class TikTokApi:
             enable_mstoken_refresh (bool): Enable msToken refresh mechanism. If False, sessions are marked invalid immediately at threshold (default: True)
             max_mstoken_refresh_attempts (int): Maximum number of msToken refresh attempts before marking session invalid (default: 2)
             metrics_callback (Callable): Optional callback object with methods for recording metrics
-            circuit_breaker_enabled (bool): Enable circuit breaker to reduce session churn during elevated errors (default: True)
-            circuit_failure_threshold (float): Failure rate (0-1) that triggers circuit open (default: 0.5 = 50%)
-            circuit_min_requests (int): Minimum requests before circuit can open (default: 10)
-            circuit_window_seconds (int): Time window for tracking request success/failure (default: 60)
-            circuit_cooldown_seconds (int): Initial cooldown before testing recovery (default: 30)
-            circuit_max_cooldown_seconds (int): Maximum cooldown with exponential backoff (default: 300)
-            circuit_half_open_success_threshold (float): Success rate needed to close circuit (default: 0.7 = 70%)
-            circuit_half_open_max_requests (int): Number of probe requests in half-open state (default: 10)
+            circuit_breaker_enabled (bool): Enable circuit breaker to reduce session churn during elevated errors (default: True, env: TIKTOK_CIRCUIT_BREAKER_ENABLED)
+            circuit_failure_threshold (float): Failure rate (0-1) that triggers circuit open (default: 0.5 = 50%, env: TIKTOK_CIRCUIT_FAILURE_THRESHOLD)
+            circuit_min_requests (int): Minimum requests before circuit can open (default: 10, env: TIKTOK_CIRCUIT_MIN_REQUESTS)
+            circuit_window_seconds (int): Time window for tracking request success/failure (default: 60, env: TIKTOK_CIRCUIT_WINDOW_SECONDS)
+            circuit_cooldown_seconds (int): Initial cooldown before testing recovery (default: 30, env: TIKTOK_CIRCUIT_COOLDOWN_SECONDS)
+            circuit_max_cooldown_seconds (int): Maximum cooldown with exponential backoff (default: 300, env: TIKTOK_CIRCUIT_MAX_COOLDOWN_SECONDS)
+            circuit_half_open_success_threshold (float): Success rate needed to close circuit (default: 0.7 = 70%, env: TIKTOK_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD)
+            circuit_half_open_max_requests (int): Number of probe requests in half-open state (default: 10, env: TIKTOK_CIRCUIT_HALF_OPEN_MAX_REQUESTS)
+
+        Environment Variables:
+            All circuit breaker parameters can be configured via environment variables (see parameter list above).
+            Explicit parameters override environment variables.
         """
         self.sessions = []
         self._session_recovery_enabled = True
@@ -366,6 +400,24 @@ class TikTokApi:
         if logger_name is None:
             logger_name = __name__
         self.__create_logger(logger_name, logging_level)
+
+        # Read circuit breaker config from environment variables if not explicitly provided
+        if circuit_breaker_enabled is None:
+            circuit_breaker_enabled = _get_env_bool("TIKTOK_CIRCUIT_BREAKER_ENABLED", True)
+        if circuit_failure_threshold is None:
+            circuit_failure_threshold = _get_env_float("TIKTOK_CIRCUIT_FAILURE_THRESHOLD", 0.5)
+        if circuit_min_requests is None:
+            circuit_min_requests = _get_env_int("TIKTOK_CIRCUIT_MIN_REQUESTS", 10)
+        if circuit_window_seconds is None:
+            circuit_window_seconds = _get_env_int("TIKTOK_CIRCUIT_WINDOW_SECONDS", 60)
+        if circuit_cooldown_seconds is None:
+            circuit_cooldown_seconds = _get_env_int("TIKTOK_CIRCUIT_COOLDOWN_SECONDS", 30)
+        if circuit_max_cooldown_seconds is None:
+            circuit_max_cooldown_seconds = _get_env_int("TIKTOK_CIRCUIT_MAX_COOLDOWN_SECONDS", 300)
+        if circuit_half_open_success_threshold is None:
+            circuit_half_open_success_threshold = _get_env_float("TIKTOK_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD", 0.7)
+        if circuit_half_open_max_requests is None:
+            circuit_half_open_max_requests = _get_env_int("TIKTOK_CIRCUIT_HALF_OPEN_MAX_REQUESTS", 10)
 
         # Initialize circuit breaker
         self._circuit_breaker_enabled = circuit_breaker_enabled
