@@ -922,8 +922,6 @@ class TikTokApi:
             # Fallback to old method for backwards compatibility
             i, session = self._get_session(**kwargs)
 
-        self.logger.info(f"Got a session: {session} with index {i}")
-
         if session.params is not None:
             params = {**session.params, **params}
 
