@@ -46,6 +46,236 @@ proxy_server_url = os.getenv("PROXY_SERVER_URL")
 proxy_username = os.getenv("PROXY_USERNAME")
 proxy_password = os.getenv("PROXY_PASSWORD")
 
+
+class CircuitBreakerState:
+    """Circuit breaker states"""
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Circuit is open, prevent session invalidation
+    HALF_OPEN = "half_open"  # Testing if service recovered
+
+
+class CircuitBreaker:
+    """
+    Circuit breaker to reduce session churn during periods of elevated errors.
+
+    When error rate exceeds threshold, the circuit opens and prevents session
+    invalidation, allowing sessions to continue trying with backoff. After a
+    cooldown period, it enters half-open state to test recovery.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: float = 0.5,
+        min_requests: int = 10,
+        window_seconds: int = 60,
+        cooldown_seconds: int = 30,
+        max_cooldown_seconds: int = 300,
+        half_open_success_threshold: float = 0.7,
+        half_open_max_requests: int = 10,
+        logger: logging.Logger = None,
+        metrics_callback: Optional[Callable] = None,
+    ):
+        """
+        Initialize circuit breaker.
+
+        Args:
+            failure_threshold: Failure rate (0-1) that triggers circuit open
+            min_requests: Minimum requests needed before circuit can open
+            window_seconds: Time window for tracking requests
+            cooldown_seconds: Initial cooldown before testing recovery
+            max_cooldown_seconds: Maximum cooldown (with exponential backoff)
+            half_open_success_threshold: Success rate needed to close circuit
+            half_open_max_requests: Number of probe requests in half-open state
+            logger: Logger instance
+            metrics_callback: Optional callback for metrics
+        """
+        self.failure_threshold = failure_threshold
+        self.min_requests = min_requests
+        self.window_seconds = window_seconds
+        self.cooldown_seconds = cooldown_seconds
+        self.max_cooldown_seconds = max_cooldown_seconds
+        self.half_open_success_threshold = half_open_success_threshold
+        self.half_open_max_requests = half_open_max_requests
+        self.logger = logger
+        self.metrics_callback = metrics_callback
+
+        # State
+        self.state = CircuitBreakerState.CLOSED
+        self.state_changed_at = time.time()
+        self.current_cooldown = cooldown_seconds
+        self.consecutive_failures = 0
+
+        # Request tracking (timestamp, success)
+        self.requests: list[tuple[float, bool]] = []
+
+        # Half-open state tracking
+        self.half_open_requests = 0
+        self.half_open_successes = 0
+
+        # Lock for thread safety
+        self._lock = asyncio.Lock()
+
+    async def record_request(self, success: bool):
+        """
+        Record a request outcome and update circuit state.
+
+        Args:
+            success: Whether the request succeeded
+        """
+        async with self._lock:
+            current_time = time.time()
+
+            # Add to requests list
+            self.requests.append((current_time, success))
+
+            # Clean old requests outside window
+            cutoff_time = current_time - self.window_seconds
+            self.requests = [(t, s) for t, s in self.requests if t > cutoff_time]
+
+            # Handle different states
+            if self.state == CircuitBreakerState.CLOSED:
+                await self._check_if_should_open()
+
+            elif self.state == CircuitBreakerState.OPEN:
+                await self._check_if_should_half_open(current_time)
+
+            elif self.state == CircuitBreakerState.HALF_OPEN:
+                await self._handle_half_open_request(success)
+
+    async def _check_if_should_open(self):
+        """Check if circuit should open based on failure rate."""
+        if len(self.requests) < self.min_requests:
+            return
+
+        failure_rate = self._get_failure_rate()
+
+        if failure_rate >= self.failure_threshold:
+            await self._transition_to_open()
+
+    async def _transition_to_open(self):
+        """Transition circuit to OPEN state."""
+        self.state = CircuitBreakerState.OPEN
+        self.state_changed_at = time.time()
+        self.consecutive_failures += 1
+
+        # Exponential backoff on cooldown
+        self.current_cooldown = min(
+            self.cooldown_seconds * (2 ** (self.consecutive_failures - 1)),
+            self.max_cooldown_seconds
+        )
+
+        if self.logger:
+            failure_rate = self._get_failure_rate()
+            self.logger.warning(
+                f"Circuit breaker OPENED - High failure rate detected: {failure_rate:.1%} "
+                f"({sum(not s for _, s in self.requests)}/{len(self.requests)} failures). "
+                f"Session invalidation paused for {self.current_cooldown}s cooldown."
+            )
+
+        if self.metrics_callback and hasattr(self.metrics_callback, 'record_circuit_opened'):
+            self.metrics_callback.record_circuit_opened(
+                failure_rate=self._get_failure_rate(),
+                cooldown_seconds=self.current_cooldown
+            )
+
+    async def _check_if_should_half_open(self, current_time: float):
+        """Check if cooldown period has elapsed and we should test recovery."""
+        if current_time - self.state_changed_at >= self.current_cooldown:
+            await self._transition_to_half_open()
+
+    async def _transition_to_half_open(self):
+        """Transition circuit to HALF_OPEN state."""
+        self.state = CircuitBreakerState.HALF_OPEN
+        self.state_changed_at = time.time()
+        self.half_open_requests = 0
+        self.half_open_successes = 0
+
+        if self.logger:
+            self.logger.info(
+                f"Circuit breaker entering HALF_OPEN state - Testing recovery with "
+                f"up to {self.half_open_max_requests} probe requests"
+            )
+
+        if self.metrics_callback and hasattr(self.metrics_callback, 'record_circuit_half_opened'):
+            self.metrics_callback.record_circuit_half_opened()
+
+    async def _handle_half_open_request(self, success: bool):
+        """Handle request in half-open state."""
+        self.half_open_requests += 1
+        if success:
+            self.half_open_successes += 1
+
+        # Check if we have enough samples
+        if self.half_open_requests >= self.half_open_max_requests:
+            success_rate = self.half_open_successes / self.half_open_requests
+
+            if success_rate >= self.half_open_success_threshold:
+                await self._transition_to_closed()
+            else:
+                await self._transition_to_open()
+
+    async def _transition_to_closed(self):
+        """Transition circuit to CLOSED state (recovery successful)."""
+        self.state = CircuitBreakerState.CLOSED
+        self.state_changed_at = time.time()
+        self.consecutive_failures = 0
+        self.current_cooldown = self.cooldown_seconds
+
+        if self.logger:
+            success_rate = self.half_open_successes / self.half_open_requests if self.half_open_requests > 0 else 0
+            self.logger.info(
+                f"Circuit breaker CLOSED - Service recovered. "
+                f"Probe success rate: {success_rate:.1%} ({self.half_open_successes}/{self.half_open_requests}). "
+                f"Resuming normal session invalidation."
+            )
+
+        if self.metrics_callback and hasattr(self.metrics_callback, 'record_circuit_closed'):
+            self.metrics_callback.record_circuit_closed()
+
+    def _get_failure_rate(self) -> float:
+        """Calculate current failure rate."""
+        if not self.requests:
+            return 0.0
+
+        failures = sum(1 for _, success in self.requests if not success)
+        return failures / len(self.requests)
+
+    def should_prevent_invalidation(self) -> bool:
+        """
+        Check if circuit breaker should prevent session invalidation.
+
+        Returns:
+            bool: True if session invalidation should be prevented
+        """
+        return self.state in (CircuitBreakerState.OPEN, CircuitBreakerState.HALF_OPEN)
+
+    def get_retry_delay(self) -> float:
+        """
+        Get recommended delay before retry based on circuit state.
+
+        Returns:
+            float: Delay in seconds (0 if CLOSED)
+        """
+        if self.state == CircuitBreakerState.CLOSED:
+            return 0.0
+        elif self.state == CircuitBreakerState.OPEN:
+            # Exponential backoff in OPEN state
+            return min(2.0 ** self.consecutive_failures, 30.0)
+        else:  # HALF_OPEN
+            # Small delay in half-open
+            return 1.0
+
+    def get_state(self) -> dict:
+        """Get current circuit breaker state for monitoring."""
+        return {
+            "state": self.state,
+            "failure_rate": self._get_failure_rate(),
+            "recent_requests": len(self.requests),
+            "cooldown_seconds": self.current_cooldown,
+            "consecutive_failures": self.consecutive_failures,
+            "time_in_state": time.time() - self.state_changed_at,
+        }
+
 @dataclasses.dataclass
 class TikTokPlaywrightSession:
     """A TikTok session using Playwright"""
@@ -85,7 +315,23 @@ class TikTokApi:
 
 
 
-    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, enable_mstoken_refresh: bool = True, max_mstoken_refresh_attempts: int = 2, metrics_callback: Optional[Callable] = None):
+    def __init__(
+        self,
+        logging_level: int = logging.WARN,
+        logger_name: str = None,
+        empty_response_threshold: int = 3,
+        enable_mstoken_refresh: bool = True,
+        max_mstoken_refresh_attempts: int = 2,
+        metrics_callback: Optional[Callable] = None,
+        circuit_breaker_enabled: bool = True,
+        circuit_failure_threshold: float = 0.5,
+        circuit_min_requests: int = 10,
+        circuit_window_seconds: int = 60,
+        circuit_cooldown_seconds: int = 30,
+        circuit_max_cooldown_seconds: int = 300,
+        circuit_half_open_success_threshold: float = 0.7,
+        circuit_half_open_max_requests: int = 10,
+    ):
         """
         Create a TikTokApi object.
 
@@ -96,6 +342,14 @@ class TikTokApi:
             enable_mstoken_refresh (bool): Enable msToken refresh mechanism. If False, sessions are marked invalid immediately at threshold (default: True)
             max_mstoken_refresh_attempts (int): Maximum number of msToken refresh attempts before marking session invalid (default: 2)
             metrics_callback (Callable): Optional callback object with methods for recording metrics
+            circuit_breaker_enabled (bool): Enable circuit breaker to reduce session churn during elevated errors (default: True)
+            circuit_failure_threshold (float): Failure rate (0-1) that triggers circuit open (default: 0.5 = 50%)
+            circuit_min_requests (int): Minimum requests before circuit can open (default: 10)
+            circuit_window_seconds (int): Time window for tracking request success/failure (default: 60)
+            circuit_cooldown_seconds (int): Initial cooldown before testing recovery (default: 30)
+            circuit_max_cooldown_seconds (int): Maximum cooldown with exponential backoff (default: 300)
+            circuit_half_open_success_threshold (float): Success rate needed to close circuit (default: 0.7 = 70%)
+            circuit_half_open_max_requests (int): Number of probe requests in half-open state (default: 10)
         """
         self.sessions = []
         self._session_recovery_enabled = True
@@ -112,6 +366,23 @@ class TikTokApi:
         if logger_name is None:
             logger_name = __name__
         self.__create_logger(logger_name, logging_level)
+
+        # Initialize circuit breaker
+        self._circuit_breaker_enabled = circuit_breaker_enabled
+        if circuit_breaker_enabled:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=circuit_failure_threshold,
+                min_requests=circuit_min_requests,
+                window_seconds=circuit_window_seconds,
+                cooldown_seconds=circuit_cooldown_seconds,
+                max_cooldown_seconds=circuit_max_cooldown_seconds,
+                half_open_success_threshold=circuit_half_open_success_threshold,
+                half_open_max_requests=circuit_half_open_max_requests,
+                logger=self.logger,
+                metrics_callback=metrics_callback,
+            )
+        else:
+            self._circuit_breaker = None
 
         User.parent = self
         Video.parent = self
@@ -1041,6 +1312,19 @@ class TikTokApi:
         retry_count = 0
         while retry_count < retries:
             retry_count += 1
+
+            # Apply circuit breaker delay if needed
+            if self._circuit_breaker:
+                delay = self._circuit_breaker.get_retry_delay()
+                if delay > 0:
+                    circuit_state = self._circuit_breaker.get_state()
+                    self.logger.debug(
+                        f"Circuit breaker {circuit_state['state']}: "
+                        f"adding {delay:.1f}s delay before retry "
+                        f"(failure_rate: {circuit_state['failure_rate']:.1%})"
+                    )
+                    await asyncio.sleep(delay)
+
             try:
                 result = await self.run_fetch_script(
                     signed_url, headers=headers, session_index=i
@@ -1055,9 +1339,20 @@ class TikTokApi:
 
                     # Increment empty response counter
                     session.empty_response_count += 1
+
+                    # Record failure to circuit breaker
+                    if self._circuit_breaker:
+                        await self._circuit_breaker.record_request(success=False)
+
+                    circuit_info = ""
+                    if self._circuit_breaker:
+                        cb_state = self._circuit_breaker.get_state()
+                        circuit_info = f" [Circuit: {cb_state['state']}, failure_rate: {cb_state['failure_rate']:.1%}]"
+
                     self.logger.warning(
                         f"Session received empty response ({session.empty_response_count}/{self._empty_response_threshold}). "
                         f"Lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                        f"{circuit_info}"
                     )
 
                     # Record empty response metric
@@ -1066,49 +1361,64 @@ class TikTokApi:
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
-                        # Check if msToken refresh is enabled and hasn't exceeded max attempts
-                        if self._enable_mstoken_refresh and session.mstoken_refresh_attempts < self._max_mstoken_refresh_attempts:
-                            session.mstoken_refresh_attempts += 1
+                        # Check circuit breaker state first
+                        should_prevent_invalidation = (
+                            self._circuit_breaker and
+                            self._circuit_breaker.should_prevent_invalidation()
+                        )
+
+                        if should_prevent_invalidation:
+                            # Circuit is open/half-open - don't invalidate session
+                            cb_state = self._circuit_breaker.get_state()
                             self.logger.warning(
-                                f"Session exceeded empty response threshold ({self._empty_response_threshold}), "
-                                f"attempting msToken refresh (attempt {session.mstoken_refresh_attempts}/{self._max_mstoken_refresh_attempts}). "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                                f"Session exceeded threshold but circuit breaker is {cb_state['state']} - "
+                                f"keeping session alive. Failure rate: {cb_state['failure_rate']:.1%}"
                             )
-
-                            # Attempt to refresh the msToken
-                            refresh_success = await self.refresh_mstoken(session)
-
-                            if refresh_success:
-                                # Reset empty response counter to give refreshed session a chance
-                                session.empty_response_count = 0
-                                self.logger.info(
-                                    "msToken refreshed successfully, session will retry on next request"
-                                )
-                            else:
-                                self.logger.warning(
-                                    "msToken refresh failed, session will be marked invalid on next empty response"
-                                )
+                            # Continue to raise exception but don't invalidate session
                         else:
-                            # Refresh disabled or max attempts exceeded, mark session invalid
-                            if not self._enable_mstoken_refresh:
-                                reason = "msToken refresh disabled"
-                            else:
-                                reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
-
-                            self.logger.error(
-                                f"Session {reason}, marking invalid. "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
-                            )
-
-                            # Record session invalidation metric with lifetime stats
-                            if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
-                                self._metrics_callback.record_session_invalidated(
-                                    session.empty_response_count,
-                                    session.successful_requests,
-                                    session.total_requests
+                            # Normal behavior: check if msToken refresh is enabled
+                            if self._enable_mstoken_refresh and session.mstoken_refresh_attempts < self._max_mstoken_refresh_attempts:
+                                session.mstoken_refresh_attempts += 1
+                                self.logger.warning(
+                                    f"Session exceeded empty response threshold ({self._empty_response_threshold}), "
+                                    f"attempting msToken refresh (attempt {session.mstoken_refresh_attempts}/{self._max_mstoken_refresh_attempts}). "
+                                    f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
                                 )
 
-                            await self._mark_session_invalid(session)
+                                # Attempt to refresh the msToken
+                                refresh_success = await self.refresh_mstoken(session)
+
+                                if refresh_success:
+                                    # Reset empty response counter to give refreshed session a chance
+                                    session.empty_response_count = 0
+                                    self.logger.info(
+                                        "msToken refreshed successfully, session will retry on next request"
+                                    )
+                                else:
+                                    self.logger.warning(
+                                        "msToken refresh failed, session will be marked invalid on next empty response"
+                                    )
+                            else:
+                                # Refresh disabled or max attempts exceeded, mark session invalid
+                                if not self._enable_mstoken_refresh:
+                                    reason = "msToken refresh disabled"
+                                else:
+                                    reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
+
+                                self.logger.error(
+                                    f"Session {reason}, marking invalid. "
+                                    f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                                )
+
+                                # Record session invalidation metric with lifetime stats
+                                if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
+                                    self._metrics_callback.record_session_invalidated(
+                                        session.empty_response_count,
+                                        session.successful_requests,
+                                        session.total_requests
+                                    )
+
+                                await self._mark_session_invalid(session)
 
                     raise EmptyResponseException(
                         result,
@@ -1119,6 +1429,10 @@ class TikTokApi:
                     # Track successful request
                     session.total_requests += 1
                     session.successful_requests += 1
+
+                    # Record success to circuit breaker
+                    if self._circuit_breaker:
+                        await self._circuit_breaker.record_request(success=True)
 
                     # Reset counters on successful response
                     session.empty_response_count = 0
@@ -1139,7 +1453,26 @@ class TikTokApi:
             except PlaywrightError as e:
                 # Session died during request
                 self.logger.error(f"Playwright error during request: {e}")
-                await self._mark_session_invalid(session)
+
+                # Record failure to circuit breaker
+                if self._circuit_breaker:
+                    await self._circuit_breaker.record_request(success=False)
+
+                # Check circuit breaker before invalidating
+                should_prevent_invalidation = (
+                    self._circuit_breaker and
+                    self._circuit_breaker.should_prevent_invalidation()
+                )
+
+                if should_prevent_invalidation:
+                    cb_state = self._circuit_breaker.get_state()
+                    self.logger.warning(
+                        f"PlaywrightError but circuit breaker is {cb_state['state']} - "
+                        f"keeping session in pool (may be unhealthy)"
+                    )
+                else:
+                    # Normal behavior: invalidate the session
+                    await self._mark_session_invalid(session)
 
                 if retry_count < retries:
                     self.logger.debug(
@@ -1203,7 +1536,7 @@ class TikTokApi:
         valid_sessions = sum(1 for s in self.sessions if s.is_valid)
         invalid_sessions = len(self.sessions) - valid_sessions
 
-        return {
+        stats = {
             "total_sessions": len(self.sessions),
             "valid_sessions": valid_sessions,
             "invalid_sessions": invalid_sessions,
@@ -1213,6 +1546,12 @@ class TikTokApi:
             "auto_cleanup_enabled": self._auto_cleanup_dead_sessions,
             "recovery_enabled": self._session_recovery_enabled,
         }
+
+        # Add circuit breaker state if enabled
+        if self._circuit_breaker:
+            stats["circuit_breaker"] = self._circuit_breaker.get_state()
+
+        return stats
 
     async def health_check(self) -> dict:
         """
@@ -1247,7 +1586,30 @@ class TikTokApi:
                 f"{health['invalid_sessions']} invalid sessions accumulating (auto-cleanup disabled)"
             )
 
+        # Add circuit breaker warning if open
+        if self._circuit_breaker:
+            cb_state = self._circuit_breaker.get_state()
+            if cb_state["state"] == CircuitBreakerState.OPEN:
+                health["circuit_breaker_warning"] = (
+                    f"Circuit breaker is OPEN - session invalidation paused. "
+                    f"Failure rate: {cb_state['failure_rate']:.1%}, "
+                    f"cooldown: {cb_state['cooldown_seconds']}s"
+                )
+
         return health
+
+    def get_circuit_breaker_state(self) -> dict:
+        """
+        Get current circuit breaker state.
+
+        Returns:
+            dict: Circuit breaker state including current state, failure rate, etc.
+                  Returns None if circuit breaker is disabled.
+        """
+        if not self._circuit_breaker:
+            return None
+
+        return self._circuit_breaker.get_state()
 
     async def __aenter__(self):
         return self
