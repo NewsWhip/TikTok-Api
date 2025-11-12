@@ -263,74 +263,6 @@ class TikTokApi:
         session.page = None
         session.context = None
 
-    async def refresh_mstoken(self, session: TikTokPlaywrightSession) -> bool:
-        """
-        Refresh the msToken for a session by reloading the page.
-        This triggers TikTok's token generation mechanism.
-
-        Args:
-            session: The session to refresh
-
-        Returns:
-            bool: True if refresh succeeded, False otherwise
-        """
-        try:
-            self.logger.debug("Attempting to refresh msToken by reloading page...")
-
-            # Track bandwidth during reload
-            total_bytes = 0
-            request_count = 0
-
-            def track_reload_response(response):
-                nonlocal total_bytes, request_count
-                request_count += 1
-                try:
-                    size = response.headers.get('content-length')
-                    if size:
-                        total_bytes += int(size)
-                        self.logger.debug(
-                            f"Reload resource: {response.url[:80]} [{response.request.resource_type}] "
-                            f"Size: {int(size):,} bytes"
-                        )
-                except Exception:
-                    pass
-
-            # Add temporary listener to track reload bandwidth
-            session.page.on("response", track_reload_response)
-
-            # Reload the page to trigger fresh token generation
-            await session.page.reload(wait_until="networkidle")
-            await asyncio.sleep(3)  # Wait for token generation
-
-            # Remove the temporary listener
-            session.page.remove_listener("response", track_reload_response)
-
-            # Log total bandwidth used
-            total_mb = total_bytes / (1024 * 1024)
-            self.logger.debug(
-                f"Page reload completed: {request_count} requests, {total_mb:.2f} MB ({total_bytes:,} bytes)"
-            )
-
-            # Get fresh cookies
-            cookies = await self.get_session_cookies(session)
-            new_ms_token = cookies.get("msToken")
-
-            if new_ms_token and new_ms_token != session.ms_token:
-                old_token_preview = session.ms_token[:20] + "..." if session.ms_token else "None"
-                new_token_preview = new_ms_token[:20] + "..." if new_ms_token else "None"
-
-                session.ms_token = new_ms_token
-                self.logger.debug(
-                    f"Successfully refreshed msToken (old: {old_token_preview}, new: {new_token_preview})"
-                )
-                return True
-            else:
-                self.logger.warning("msToken refresh did not produce a new token")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Failed to refresh msToken: {e}")
-            return False
 
     async def _get_valid_session_index(
         self, **kwargs
@@ -407,26 +339,6 @@ class TikTokApi:
 
             if removed_count > 0:
                 self.logger.debug(f"Removed {removed_count} dead session(s)")
-
-            self.logger.info(f"Creating {removed_count} sessions to replace dead sessions...")
-            await asyncio.gather(
-                *(
-                    self.create_sessions(headless=False,
-                                        ms_tokens=[],
-                                        num_sessions=1,
-                                        sleep_after=3,
-                                        starting_url="https://www.tiktok.com",
-                                        proxies=[self.get_proxy_options()],
-                                        suppress_resource_load_types=["stylesheet", "image", "media",
-                                                                      "font", "textrack", "xhr",
-                                                                      "eventsource", "websocket",
-                                                                      "manifest", "other"],
-                                        context_options={"ignore_https_errors": True},
-                                        timeout=60000)
-                    for _ in range(removed_count)
-                ),
-                return_exceptions=True  # This is the key parameter
-            )
 
             # Note: We don't automatically create new sessions here because we'd need
             # all the original parameters (proxies, ms_tokens, etc.)
@@ -1066,49 +978,27 @@ class TikTokApi:
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
-                        # Check if msToken refresh is enabled and hasn't exceeded max attempts
-                        if self._enable_mstoken_refresh and session.mstoken_refresh_attempts < self._max_mstoken_refresh_attempts:
-                            session.mstoken_refresh_attempts += 1
-                            self.logger.warning(
-                                f"Session exceeded empty response threshold ({self._empty_response_threshold}), "
-                                f"attempting msToken refresh (attempt {session.mstoken_refresh_attempts}/{self._max_mstoken_refresh_attempts}). "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
-                            )
-
-                            # Attempt to refresh the msToken
-                            refresh_success = await self.refresh_mstoken(session)
-
-                            if refresh_success:
-                                # Reset empty response counter to give refreshed session a chance
-                                session.empty_response_count = 0
-                                self.logger.info(
-                                    "msToken refreshed successfully, session will retry on next request"
-                                )
-                            else:
-                                self.logger.warning(
-                                    "msToken refresh failed, session will be marked invalid on next empty response"
-                                )
+                        # Refresh disabled or max attempts exceeded, mark session invalid
+                        if not self._enable_mstoken_refresh:
+                            reason = "msToken refresh disabled"
                         else:
-                            # Refresh disabled or max attempts exceeded, mark session invalid
-                            if not self._enable_mstoken_refresh:
-                                reason = "msToken refresh disabled"
-                            else:
-                                reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
+                            reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
 
-                            self.logger.error(
-                                f"Session {reason}, marking invalid. "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                        self.logger.error(
+                            f"Session {reason}, marking invalid. "
+                            f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                        )
+
+                        # Record session invalidation metric with lifetime stats
+                        if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
+                            self._metrics_callback.record_session_invalidated(
+                                session.empty_response_count,
+                                session.successful_requests,
+                                session.total_requests
                             )
 
-                            # Record session invalidation metric with lifetime stats
-                            if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
-                                self._metrics_callback.record_session_invalidated(
-                                    session.empty_response_count,
-                                    session.successful_requests,
-                                    session.total_requests
-                                )
+                        await self._mark_session_invalid(session)
 
-                            await self._mark_session_invalid(session)
 
                     raise EmptyResponseException(
                         result,
