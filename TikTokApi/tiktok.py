@@ -57,6 +57,7 @@ class TikTokPlaywrightSession:
     empty_response_count: int = 0
     successful_requests: int = 0
     total_requests: int = 0
+    session_identifier: str = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class TikTokApi:
@@ -982,7 +983,7 @@ class TikTokApi:
                     session.successful_requests += 1
 
                     # Reset counters on successful response
-                    session.empty_response_count = 0
+                    #session.empty_response_count = 0
                     return result
                 except json.decoder.JSONDecodeError:
                     if retry_count == retries:
