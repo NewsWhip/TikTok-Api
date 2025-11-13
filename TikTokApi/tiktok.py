@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Optional
 import random
 import time
 import json
+import uuid
 
 from playwright.async_api import (
     Browser,
