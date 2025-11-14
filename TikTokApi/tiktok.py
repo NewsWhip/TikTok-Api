@@ -873,7 +873,7 @@ class TikTokApi:
         else:
             headers = session.headers
 
-        print(f"session.proxy: " + session.proxy)
+        logging.info(f"session.proxy: {session.proxy}")
 
         # get msToken
         if params.get("msToken") is None:
