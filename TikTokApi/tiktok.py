@@ -873,7 +873,7 @@ class TikTokApi:
         else:
             headers = session.headers
 
-        username = eval(session.proxy)["username"]
+        username = session.proxy["username"]
         country = username.rsplit('-', 1)[-1]
         logging.info(f"country: {country}")
 
