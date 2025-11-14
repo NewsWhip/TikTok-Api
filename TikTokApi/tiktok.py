@@ -873,6 +873,8 @@ class TikTokApi:
         else:
             headers = session.headers
 
+        print(f"session.proxy: " + session.proxy)
+
         # get msToken
         if params.get("msToken") is None:
             # try to get msToken from session
@@ -915,7 +917,7 @@ class TikTokApi:
 
                     # Record empty response metric
                     if self._metrics_callback and hasattr(self._metrics_callback, 'record_empty_response'):
-                        self._metrics_callback.record_empty_response()
+                        self._metrics_callback.record_empty_response(proxy_username=session.proxy)
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
