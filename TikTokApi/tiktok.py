@@ -915,7 +915,8 @@ class TikTokApi:
 
                     # Record empty response metric
                     if self._metrics_callback and hasattr(self._metrics_callback, 'record_empty_response'):
-                        self._metrics_callback.record_empty_response()
+                        country = session.proxy["username"].rsplit('-', 1)[-1]
+                        self._metrics_callback.record_empty_response(proxy_country=country)
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
