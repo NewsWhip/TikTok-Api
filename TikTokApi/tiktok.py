@@ -78,7 +78,7 @@ class TikTokApi:
     search = Search
     playlist = Playlist
 
-    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None):
+    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, metrics_callback: Optional[Callable] = None):
         """
         Create a TikTokApi object.
 
