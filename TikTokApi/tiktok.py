@@ -873,7 +873,9 @@ class TikTokApi:
         else:
             headers = session.headers
 
-        logging.info(f"session.proxy: {session.proxy}")
+        username = eval(session.proxy)["username"]
+        country = username.rsplit('-', 1)[-1]
+        logging.info(f"country: {country}")
 
         # get msToken
         if params.get("msToken") is None:
