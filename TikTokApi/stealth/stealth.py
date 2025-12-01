@@ -80,8 +80,8 @@ class StealthConfig:
     navigator_permissions: bool = True
     navigator_platform: bool = True
     navigator_plugins: bool = True
-    navigator_user_agent: bool = True
-    navigator_vendor: bool = True
+    navigator_user_agent: bool = False
+    navigator_vendor: bool = False
     outerdimensions: bool = True
     hairline: bool = True
 

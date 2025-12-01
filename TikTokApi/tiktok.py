@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import dataclasses
-import os
-import re
 from typing import Any, Awaitable, Callable, Optional
 import random
 import time
 import json
+import uuid
 
 from playwright.async_api import (
     Browser,
@@ -42,10 +41,6 @@ from .exceptions import (
     EmptyResponseException,
 )
 
-proxy_server_url = os.getenv("PROXY_SERVER_URL")
-proxy_username = os.getenv("PROXY_USERNAME")
-proxy_password = os.getenv("PROXY_PASSWORD")
-
 @dataclasses.dataclass
 class TikTokPlaywrightSession:
     """A TikTok session using Playwright"""
@@ -61,7 +56,7 @@ class TikTokPlaywrightSession:
     empty_response_count: int = 0
     successful_requests: int = 0
     total_requests: int = 0
-    mstoken_refresh_attempts: int = 0
+    session_identifier: str = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class TikTokApi:
@@ -83,18 +78,14 @@ class TikTokApi:
     search = Search
     playlist = Playlist
 
-
-
-    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, enable_mstoken_refresh: bool = True, max_mstoken_refresh_attempts: int = 2, metrics_callback: Optional[Callable] = None):
+    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, metrics_callback: Optional[Callable] = None):
         """
         Create a TikTokApi object.
 
         Args:
             logging_level (int): The logging level you want to use.
             logger_name (str): The name of the logger you want to use.
-            empty_response_threshold (int): Number of consecutive empty responses before attempting msToken refresh (default: 3)
-            enable_mstoken_refresh (bool): Enable msToken refresh mechanism. If False, sessions are marked invalid immediately at threshold (default: True)
-            max_mstoken_refresh_attempts (int): Maximum number of msToken refresh attempts before marking session invalid (default: 2)
+            empty_response_threshold (int): Number of consecutive empty responses before invalidating session
             metrics_callback (Callable): Optional callback object with methods for recording metrics
         """
         self.sessions = []
@@ -105,8 +96,6 @@ class TikTokApi:
         self._proxy_provider: Optional[ProxyProvider] = None
         self._proxy_algorithm: Optional[Algorithm] = None
         self._empty_response_threshold = empty_response_threshold
-        self._enable_mstoken_refresh = enable_mstoken_refresh
-        self._max_mstoken_refresh_attempts = max_mstoken_refresh_attempts
         self._metrics_callback = metrics_callback
 
         if logger_name is None:
@@ -224,38 +213,23 @@ class TikTokApi:
 
     async def _mark_session_invalid(self, session: TikTokPlaywrightSession):
         """
-        Mark a session as invalid and completely remove it along with its browser resources.
+        Mark a session as invalid and attempt cleanup.
 
         Args:
             session: The session to mark as invalid
         """
         session.is_valid = False
 
-        # CRITICAL: Remove from sessions list FIRST before closing resources
-        # This prevents race conditions where other threads try to use a closing session
-        if self._auto_cleanup_dead_sessions and session in self.sessions:
-            try:
-                self.sessions.remove(session)
-                self.logger.info(
-                    f"Removed dead session from pool. Remaining: {len(self.sessions)}"
-                )
-            except ValueError:
-                pass  # Session already removed
-
-        # Now safely cleanup resources - no other thread can grab this session
-        # Close page first
+        # Attempt graceful cleanup
         try:
-            if session.page and not session.page.is_closed():
+            if session.page:
                 await session.page.close()
-                self.logger.debug(f"Closed page for invalid session")
         except Exception as e:
             self.logger.debug(f"Error closing page during invalidation: {e}")
 
-        # Then close context
         try:
             if session.context:
                 await session.context.close()
-                self.logger.debug(f"Closed context for invalid session")
         except Exception as e:
             self.logger.debug(f"Error closing context during invalidation: {e}")
 
@@ -263,74 +237,16 @@ class TikTokApi:
         session.page = None
         session.context = None
 
-    async def refresh_mstoken(self, session: TikTokPlaywrightSession) -> bool:
-        """
-        Refresh the msToken for a session by reloading the page.
-        This triggers TikTok's token generation mechanism.
-
-        Args:
-            session: The session to refresh
-
-        Returns:
-            bool: True if refresh succeeded, False otherwise
-        """
-        try:
-            self.logger.debug("Attempting to refresh msToken by reloading page...")
-
-            # Track bandwidth during reload
-            total_bytes = 0
-            request_count = 0
-
-            def track_reload_response(response):
-                nonlocal total_bytes, request_count
-                request_count += 1
-                try:
-                    size = response.headers.get('content-length')
-                    if size:
-                        total_bytes += int(size)
-                        self.logger.debug(
-                            f"Reload resource: {response.url[:80]} [{response.request.resource_type}] "
-                            f"Size: {int(size):,} bytes"
-                        )
-                except Exception:
-                    pass
-
-            # Add temporary listener to track reload bandwidth
-            session.page.on("response", track_reload_response)
-
-            # Reload the page to trigger fresh token generation
-            await session.page.reload(wait_until="networkidle")
-            await asyncio.sleep(3)  # Wait for token generation
-
-            # Remove the temporary listener
-            session.page.remove_listener("response", track_reload_response)
-
-            # Log total bandwidth used
-            total_mb = total_bytes / (1024 * 1024)
-            self.logger.debug(
-                f"Page reload completed: {request_count} requests, {total_mb:.2f} MB ({total_bytes:,} bytes)"
-            )
-
-            # Get fresh cookies
-            cookies = await self.get_session_cookies(session)
-            new_ms_token = cookies.get("msToken")
-
-            if new_ms_token and new_ms_token != session.ms_token:
-                old_token_preview = session.ms_token[:20] + "..." if session.ms_token else "None"
-                new_token_preview = new_ms_token[:20] + "..." if new_ms_token else "None"
-
-                session.ms_token = new_ms_token
+        # Immediately remove from sessions list if auto-cleanup is enabled
+        # This prevents memory leaks from accumulating dead sessions
+        if self._auto_cleanup_dead_sessions and session in self.sessions:
+            try:
+                self.sessions.remove(session)
                 self.logger.debug(
-                    f"Successfully refreshed msToken (old: {old_token_preview}, new: {new_token_preview})"
+                    f"Automatically removed dead session from pool. Remaining: {len(self.sessions)}"
                 )
-                return True
-            else:
-                self.logger.warning("msToken refresh did not produce a new token")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Failed to refresh msToken: {e}")
-            return False
+            except ValueError:
+                pass  # Session already removed
 
     async def _get_valid_session_index(
         self, **kwargs
@@ -383,50 +299,30 @@ class TikTokApi:
             "Please call create_sessions() again or restart the API."
         )
 
-    def get_proxy_options(self):
-        return {
-            "server": proxy_server_url,
-            "username": proxy_username,
-            "password": proxy_password
-        }
-
     async def _recover_sessions(self):
         """
         Attempt to recover from session failures by cleaning up dead sessions
         and potentially creating new ones if we have the necessary configuration.
         """
         async with self._session_creation_lock:
-            self.logger.debug("Starting session recovery...")
+            self.logger.info("Starting session recovery...")
 
-            # Remove invalid sessions
+            # Remove invalid sessions with proper cleanup
             initial_count = len(self.sessions)
-            self.sessions = [
-                s for s in self.sessions if await self._is_session_valid(s)
-            ]
-            removed_count = initial_count - len(self.sessions)
+            dead_sessions = []
+
+            for s in self.sessions[:]:  # Iterate over a copy
+                if not await self._is_session_valid(s):
+                    dead_sessions.append(s)
+
+            # Properly clean up each dead session
+            for s in dead_sessions:
+                await self._mark_session_invalid(s)
+
+            removed_count = len(dead_sessions)
 
             if removed_count > 0:
-                self.logger.debug(f"Removed {removed_count} dead session(s)")
-
-            self.logger.info(f"Creating {removed_count} sessions to replace dead sessions...")
-            await asyncio.gather(
-                *(
-                    self.create_sessions(headless=False,
-                                        ms_tokens=[],
-                                        num_sessions=1,
-                                        sleep_after=3,
-                                        starting_url="https://www.tiktok.com",
-                                        proxies=[self.get_proxy_options()],
-                                        suppress_resource_load_types=["stylesheet", "image", "media",
-                                                                      "font", "textrack", "xhr",
-                                                                      "eventsource", "websocket",
-                                                                      "manifest", "other"],
-                                        context_options={"ignore_https_errors": True},
-                                        timeout=60000)
-                    for _ in range(removed_count)
-                ),
-                return_exceptions=True  # This is the key parameter
-            )
+                self.logger.info(f"Removed {removed_count} dead session(s)")
 
             # Note: We don't automatically create new sessions here because we'd need
             # all the original parameters (proxies, ms_tokens, etc.)
@@ -475,27 +371,6 @@ class TikTokApi:
             else:
                 page = await context.new_page()
                 await stealth_async(page)
-
-                # Add network logging to track what's being loaded
-                async def log_request(request):
-                    self.logger.debug(
-                        f"→ Request: {request.method} {request.url[:100]} "
-                        f"[{request.resource_type}]"
-                    )
-
-                async def log_response(response):
-                    size = await response.request.sizes()
-                    req_size = size['requestHeadersSize'] + size['requestBodySize']
-                    resp_size = size['responseHeadersSize'] + size['responseBodySize']
-                    self.logger.debug(
-                        f"← Response: {response.status} {response.url[:100]} "
-                        f"[{response.request.resource_type}] Sizes: request={req_size} bytes "
-                        f"response={resp_size} bytes"
-                    )
-
-                page.on("request", log_request)
-                page.on("response", log_response)
-
                 _ = await page.goto(url)
 
             if "tiktok" not in page.url:
@@ -510,23 +385,12 @@ class TikTokApi:
 
             page.once("request", handle_request)
 
-            def blockable_request(request):
-                if ((request.resource_type in suppress_resource_load_types) or re.match(
-                        r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
-                        request.url)):
-                  self.logger.debug(
-                      f"aborting request to {request.url}"
-                  )
-                  return True
-                else:
-                  return False
-
-
             if suppress_resource_load_types is not None:
                 await page.route(
                     "**/*",
                     lambda route, request: (
-                        route.abort() if (blockable_request(request))
+                        route.abort()
+                        if request.resource_type in suppress_resource_load_types
                         else route.continue_()
                     ),
                 )
@@ -666,35 +530,42 @@ class TikTokApi:
                 "Please use 'proxy_provider' (recommended) or 'proxies' (deprecated)."
             )
 
-        self.playwright = await async_playwright().start()
-        if browser_context_factory is not None:
-            self.browser = await browser_context_factory(self.playwright)
-        elif browser == "chromium":
-            if headless and override_browser_args is None:
-                override_browser_args = ["--headless=new"]
-                headless = False  # managed by the arg
-            self.browser = await self.playwright.chromium.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        elif browser == "firefox":
-            self.browser = await self.playwright.firefox.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        elif browser == "webkit":
-            self.browser = await self.playwright.webkit.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        else:
-            raise ValueError("Invalid browser argument passed")
+        # Use lock to prevent race condition when creating browser for the first time
+        async with self._session_creation_lock:
+            # Only launch browser if it doesn't exist yet
+            if self.playwright is None:
+                self.playwright = await async_playwright().start()
+
+            # Only launch browser if it doesn't exist yet - reuse existing browser for new sessions
+            if self.browser is None:
+                if browser_context_factory is not None:
+                    self.browser = await browser_context_factory(self.playwright)
+                elif browser == "chromium":
+                    if headless and override_browser_args is None:
+                        override_browser_args = ["--headless=new"]
+                        headless = False  # managed by the arg
+                    self.browser = await self.playwright.chromium.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                elif browser == "firefox":
+                    self.browser = await self.playwright.firefox.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                elif browser == "webkit":
+                    self.browser = await self.playwright.webkit.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                else:
+                    raise ValueError("Invalid browser argument passed")
 
         # Create sessions concurrently
         # Use return_exceptions only if partial sessions are allowed
@@ -881,27 +752,13 @@ class TikTokApi:
             # Fallback to old method for backwards compatibility
             _, session = self._get_session(**kwargs)
 
-        # Check if session is still valid before using it
-        # This prevents race conditions where another thread just closed the session
-        if not session.is_valid or session not in self.sessions:
-            self.logger.debug(f"Session became invalid before fetch, attempting to get a new session")
-            try:
-                # Get a fresh valid session instead of erroring out
-                _, session = await self._get_valid_session_index(**kwargs)
-                self.logger.debug(f"Successfully got a replacement session")
-            except Exception as e:
-                self.logger.error(f"Failed to get replacement session: {e}")
-                raise PlaywrightError("Session was closed and no valid session available")
-
         try:
             result = await session.page.evaluate(js_script)
             return result
         except PlaywrightError as e:
             # Session died during operation
             self.logger.error(f"Session failed during fetch: {e}")
-            # Only mark invalid if it's still in the session list (might have been removed already)
-            if session in self.sessions:
-                await self._mark_session_invalid(session)
+            await self._mark_session_invalid(session)
             raise
 
     async def generate_x_bogus(self, url: str, **kwargs):
@@ -935,9 +792,7 @@ class TikTokApi:
                     "https://www.tiktok.com/foryou",
                 ]
 
-                page = random.choice(try_urls)
-                self.logger.debug(f"Timed out waiting for acrawler function. Reloading page: {page}")
-                await session.page.goto(page)
+                await session.page.goto(random.choice(try_urls))
             except PlaywrightError as e:
                 # Session died
                 self.logger.error(f"Session died during x-bogus generation: {e}")
@@ -1010,8 +865,6 @@ class TikTokApi:
             # Fallback to old method for backwards compatibility
             i, session = self._get_session(**kwargs)
 
-        self.logger.info(f"Got a session: {session} with index {i}")
-
         if session.params is not None:
             params = {**session.params, **params}
 
@@ -1066,49 +919,16 @@ class TikTokApi:
 
                     # Only take action if threshold is exceeded
                     if session.empty_response_count >= self._empty_response_threshold:
-                        # Check if msToken refresh is enabled and hasn't exceeded max attempts
-                        if self._enable_mstoken_refresh and session.mstoken_refresh_attempts < self._max_mstoken_refresh_attempts:
-                            session.mstoken_refresh_attempts += 1
-                            self.logger.warning(
-                                f"Session exceeded empty response threshold ({self._empty_response_threshold}), "
-                                f"attempting msToken refresh (attempt {session.mstoken_refresh_attempts}/{self._max_mstoken_refresh_attempts}). "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                        # Record session invalidation metric with lifetime stats
+                        if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
+                            self._metrics_callback.record_session_invalidated(
+                                session.empty_response_count,
+                                session.successful_requests,
+                                session.total_requests
                             )
 
-                            # Attempt to refresh the msToken
-                            refresh_success = await self.refresh_mstoken(session)
+                        await self._mark_session_invalid(session)
 
-                            if refresh_success:
-                                # Reset empty response counter to give refreshed session a chance
-                                session.empty_response_count = 0
-                                self.logger.info(
-                                    "msToken refreshed successfully, session will retry on next request"
-                                )
-                            else:
-                                self.logger.warning(
-                                    "msToken refresh failed, session will be marked invalid on next empty response"
-                                )
-                        else:
-                            # Refresh disabled or max attempts exceeded, mark session invalid
-                            if not self._enable_mstoken_refresh:
-                                reason = "msToken refresh disabled"
-                            else:
-                                reason = f"exceeded maximum msToken refresh attempts ({self._max_mstoken_refresh_attempts})"
-
-                            self.logger.error(
-                                f"Session {reason}, marking invalid. "
-                                f"Session lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
-                            )
-
-                            # Record session invalidation metric with lifetime stats
-                            if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
-                                self._metrics_callback.record_session_invalidated(
-                                    session.empty_response_count,
-                                    session.successful_requests,
-                                    session.total_requests
-                                )
-
-                            await self._mark_session_invalid(session)
 
                     raise EmptyResponseException(
                         result,
@@ -1121,15 +941,14 @@ class TikTokApi:
                     session.successful_requests += 1
 
                     # Reset counters on successful response
-                    session.empty_response_count = 0
-                    session.mstoken_refresh_attempts = 0
+                    #session.empty_response_count = 0
                     return result
                 except json.decoder.JSONDecodeError:
                     if retry_count == retries:
                         self.logger.error(f"Failed to decode json response: {result}")
                         raise InvalidJSONException()
 
-                    self.logger.debug(
+                    self.logger.info(
                         f"Failed a request, retrying ({retry_count}/{retries})"
                     )
                     if exponential_backoff:
@@ -1142,7 +961,7 @@ class TikTokApi:
                 await self._mark_session_invalid(session)
 
                 if retry_count < retries:
-                    self.logger.debug(
+                    self.logger.info(
                         f"Retrying with a new session ({retry_count}/{retries})"
                     )
                     # Get a new valid session for the retry
