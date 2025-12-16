@@ -943,6 +943,9 @@ class TikTokApi:
 
                     # Reset counters on successful response
                     #session.empty_response_count = 0
+                    if self._metrics_callback and hasattr(self._metrics_callback, 'record_success_response'):
+                        country = session.proxy["username"].rsplit('-', 1)[-1]
+                        self._metrics_callback.record_success_response(proxy_country=country)
                     return result
                 except json.decoder.JSONDecodeError:
                     if retry_count == retries:
