@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import dataclasses
+import re
 from typing import Any, Awaitable, Callable, Optional
 import random
 import time
@@ -384,6 +385,19 @@ class TikTokApi:
                 request_headers = request.headers
 
             page.once("request", handle_request)
+
+            forbidden_domain = re.compile('sf16-website-login.neutral.tiktokcdn-eu.com')
+
+            def blockable_request(request):
+                if ((request.resource_type in suppress_resource_load_types) or re.match(
+                        r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
+                        request.url) or forbidden_domain.search(request.url)):
+                  self.logger.info(
+                      f"aborting request to {request.url}"
+                  )
+                  return True
+                else:
+                  return False
 
             if suppress_resource_load_types is not None:
                 await page.route(
