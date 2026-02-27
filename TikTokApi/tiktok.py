@@ -403,8 +403,7 @@ class TikTokApi:
                 await page.route(
                     "**/*",
                     lambda route, request: (
-                        route.abort()
-                        if request.resource_type in suppress_resource_load_types
+                        route.abort() if (blockable_request(request))
                         else route.continue_()
                     ),
                 )
