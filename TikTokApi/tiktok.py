@@ -386,18 +386,29 @@ class TikTokApi:
 
             page.once("request", handle_request)
 
-            forbidden_domain = re.compile('sf16-website-login.neutral.tiktokcdn-eu.com')
+            # List of forbidden strings - if any appear in URL, request will be blocked
+            forbidden_strings = [
+                'sf16-website-login.neutral'
+            ]
 
             def blockable_request(request):
-                if ((request.resource_type in suppress_resource_load_types) or re.match(
-                        r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*',
-                        request.url) or forbidden_domain.search(request.url)):
-                  self.logger.info(
-                      f"aborting request to {request.url}"
-                  )
-                  return True
-                else:
-                  return False
+                # Check if resource type should be blocked
+                if request.resource_type in suppress_resource_load_types:
+                    self.logger.info(f"aborting request to {request.url} (resource type: {request.resource_type})")
+                    return True
+
+                # Check if URL matches known blocking patterns
+                if re.match(r'https://(mon[^.]+\.tiktokv\.(com|eu|us)|mcs[^.]+\.tiktokv\.(com|eu|us)|m\.tiktok\.com|www\.tiktok\.com.ttwid.check)/.*', request.url):
+                    self.logger.info(f"aborting request to {request.url} (matched blocking pattern)")
+                    return True
+
+                # Check if URL contains any forbidden strings
+                for forbidden_string in forbidden_strings:
+                    if forbidden_string in request.url:
+                        self.logger.info(f"aborting request to {request.url} (contains forbidden string: {forbidden_string})")
+                        return True
+
+                return False
 
             if suppress_resource_load_types is not None:
                 await page.route(
