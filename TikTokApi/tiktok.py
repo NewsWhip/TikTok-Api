@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Optional
 import random
 import time
 import json
+import uuid
 
 from playwright.async_api import (
     Browser,
@@ -40,7 +41,6 @@ from .exceptions import (
     EmptyResponseException,
 )
 
-
 @dataclasses.dataclass
 class TikTokPlaywrightSession:
     """A TikTok session using Playwright"""
@@ -53,6 +53,10 @@ class TikTokPlaywrightSession:
     ms_token: str = None
     base_url: str = "https://www.tiktok.com"
     is_valid: bool = True
+    empty_response_count: int = 0
+    successful_requests: int = 0
+    total_requests: int = 0
+    session_identifier: str = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class TikTokApi:
@@ -74,13 +78,15 @@ class TikTokApi:
     search = Search
     playlist = Playlist
 
-    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None):
+    def __init__(self, logging_level: int = logging.WARN, logger_name: str = None, empty_response_threshold: int = 3, metrics_callback: Optional[Callable] = None):
         """
         Create a TikTokApi object.
 
         Args:
             logging_level (int): The logging level you want to use.
             logger_name (str): The name of the logger you want to use.
+            empty_response_threshold (int): Number of consecutive empty responses before invalidating session
+            metrics_callback (Callable): Optional callback object with methods for recording metrics
         """
         self.sessions = []
         self._session_recovery_enabled = True
@@ -89,6 +95,8 @@ class TikTokApi:
         self._auto_cleanup_dead_sessions = True
         self._proxy_provider: Optional[ProxyProvider] = None
         self._proxy_algorithm: Optional[Algorithm] = None
+        self._empty_response_threshold = empty_response_threshold
+        self._metrics_callback = metrics_callback
 
         if logger_name is None:
             logger_name = __name__
@@ -225,6 +233,10 @@ class TikTokApi:
         except Exception as e:
             self.logger.debug(f"Error closing context during invalidation: {e}")
 
+        # Clear references to help garbage collection
+        session.page = None
+        session.context = None
+
         # Immediately remove from sessions list if auto-cleanup is enabled
         # This prevents memory leaks from accumulating dead sessions
         if self._auto_cleanup_dead_sessions and session in self.sessions:
@@ -295,12 +307,19 @@ class TikTokApi:
         async with self._session_creation_lock:
             self.logger.info("Starting session recovery...")
 
-            # Remove invalid sessions
+            # Remove invalid sessions with proper cleanup
             initial_count = len(self.sessions)
-            self.sessions = [
-                s for s in self.sessions if await self._is_session_valid(s)
-            ]
-            removed_count = initial_count - len(self.sessions)
+            dead_sessions = []
+
+            for s in self.sessions[:]:  # Iterate over a copy
+                if not await self._is_session_valid(s):
+                    dead_sessions.append(s)
+
+            # Properly clean up each dead session
+            for s in dead_sessions:
+                await self._mark_session_invalid(s)
+
+            removed_count = len(dead_sessions)
 
             if removed_count > 0:
                 self.logger.info(f"Removed {removed_count} dead session(s)")
@@ -517,35 +536,42 @@ class TikTokApi:
                 "Please use 'proxy_provider' (recommended) or 'proxies' (deprecated)."
             )
 
-        self.playwright = await async_playwright().start()
-        if browser_context_factory is not None:
-            self.browser = await browser_context_factory(self.playwright)
-        elif browser == "chromium":
-            if headless and override_browser_args is None:
-                override_browser_args = ["--headless=new"]
-                headless = False  # managed by the arg
-            self.browser = await self.playwright.chromium.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        elif browser == "firefox":
-            self.browser = await self.playwright.firefox.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        elif browser == "webkit":
-            self.browser = await self.playwright.webkit.launch(
-                headless=headless,
-                args=override_browser_args,
-                proxy=random_choice(proxies),
-                executable_path=executable_path,
-            )
-        else:
-            raise ValueError("Invalid browser argument passed")
+        # Use lock to prevent race condition when creating browser for the first time
+        async with self._session_creation_lock:
+            # Only launch browser if it doesn't exist yet
+            if self.playwright is None:
+                self.playwright = await async_playwright().start()
+
+            # Only launch browser if it doesn't exist yet - reuse existing browser for new sessions
+            if self.browser is None:
+                if browser_context_factory is not None:
+                    self.browser = await browser_context_factory(self.playwright)
+                elif browser == "chromium":
+                    if headless and override_browser_args is None:
+                        override_browser_args = ["--headless=new"]
+                        headless = False  # managed by the arg
+                    self.browser = await self.playwright.chromium.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                elif browser == "firefox":
+                    self.browser = await self.playwright.firefox.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                elif browser == "webkit":
+                    self.browser = await self.playwright.webkit.launch(
+                        headless=headless,
+                        args=override_browser_args,
+                        proxy=random_choice(proxies),
+                        executable_path=executable_path,
+                    )
+                else:
+                    raise ValueError("Invalid browser argument passed")
 
         # Create sessions concurrently
         # Use return_exceptions only if partial sessions are allowed
@@ -883,16 +909,46 @@ class TikTokApi:
                     raise Exception("TikTokApi.run_fetch_script returned None")
 
                 if result == "":
+                    # Track request
+                    session.total_requests += 1
+
+                    # Increment empty response counter
+                    session.empty_response_count += 1
+                    self.logger.warning(
+                        f"Session received empty response ({session.empty_response_count}/{self._empty_response_threshold}). "
+                        f"Lifetime: {session.successful_requests} successful / {session.total_requests} total requests"
+                    )
+
+                    # Record empty response metric
+                    if self._metrics_callback and hasattr(self._metrics_callback, 'record_empty_response'):
+                        self._metrics_callback.record_empty_response()
+
+                    # Only take action if threshold is exceeded
+                    if session.empty_response_count >= self._empty_response_threshold:
+                        # Record session invalidation metric with lifetime stats
+                        if self._metrics_callback and hasattr(self._metrics_callback, 'record_session_invalidated'):
+                            self._metrics_callback.record_session_invalidated(
+                                session.empty_response_count,
+                                session.successful_requests,
+                                session.total_requests
+                            )
+
+                        await self._mark_session_invalid(session)
+
+
                     raise EmptyResponseException(
                         result,
                         "TikTok returned an empty response. They are detecting you're a bot, try some of these: headless=False, browser='webkit', consider using a proxy",
                     )
 
                 try:
-                    data = json.loads(result)
-                    if data.get("status_code") != 0:
-                        self.logger.error(f"Got an unexpected status code: {data}")
-                    return data
+                    # Track successful request
+                    session.total_requests += 1
+                    session.successful_requests += 1
+
+                    # Reset counters on successful response
+                    #session.empty_response_count = 0
+                    return result
                 except json.decoder.JSONDecodeError:
                     if retry_count == retries:
                         self.logger.error(f"Failed to decode json response: {result}")
