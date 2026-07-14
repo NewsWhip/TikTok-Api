@@ -879,23 +879,18 @@ class TikTokApi:
         else:
             headers = session.headers
 
-        # get msToken
-        if params.get("msToken") is None:
-            # try to get msToken from session
-            if session.ms_token is not None:
-                params["msToken"] = session.ms_token
-            else:
-                # we'll try to read it from cookies
-                cookies = await self.get_session_cookies(session)
-                ms_token = cookies.get("msToken")
-                if ms_token is None:
-                    self.logger.warn(
-                        "Failed to get msToken from cookies, trying to make the request anyway (probably will fail)"
-                    )
-                params["msToken"] = ms_token
+        # TikTok now returns an empty body when msToken is sent as a query
+        # param. The msToken rides in the session cookie instead, so make sure
+        # it is never appended to the URL.
+        params.pop("msToken", None)
 
-        encoded_params = f"{url}?{urlencode(params, safe='=', quote_via=quote)}"
-        signed_url = await self.sign_url(encoded_params, session_index=i)
+        # Do not pre-sign the URL. TikTok's in-page webmssdk wraps window.fetch
+        # and appends the full, currently-valid signature set itself (X-Bogus,
+        # X-Gnarly, X-Dynosaur). frontierSign only produces X-Bogus these days,
+        # and a manually pre-appended X-Bogus collides with the wrapper's
+        # signing, which makes TikTok return an empty response. Hand the wrapper
+        # an unsigned URL and let it sign the outgoing request.
+        signed_url = f"{url}?{urlencode(params, safe='=', quote_via=quote)}"
 
         retry_count = 0
         while retry_count < retries:
